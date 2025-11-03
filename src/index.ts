@@ -52,6 +52,27 @@ function formatDays(days: number): string {
   }
 }
 
+// Check if current time is night (22:00 - 08:00)
+function isNightTime(): boolean {
+  const now = new Date();
+  const hour = now.getHours();
+  return hour >= 22 || hour < 8;
+}
+
+// Check if today is a holiday
+function isTodayHoliday(): boolean {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const holidays = hd.getHolidays(currentYear);
+
+  const today = now.toISOString().split('T')[0];
+
+  return holidays.some(holiday => {
+    const holidayDate = new Date(holiday.date).toISOString().split('T')[0];
+    return holidayDate === today;
+  });
+}
+
 bot.start((ctx) => {
   activeChatIds.add(ctx.chat.id);
 
@@ -80,10 +101,32 @@ bot.start((ctx) => {
     message += 'К сожалению, не найдено ближайших праздников.\n\n';
   }
 
-  message += '✨ Хорошего дня!';
+  message += '📬 Через некоторое время может прийти тестовое сообщение, для проверки работоспособности систем\n\n';
 
   ctx.reply(message);
   console.log(`User ${ctx.chat.id} subscribed`);
+
+  // Schedule test message after 6 hours
+  const chatId = ctx.chat.id;
+  setTimeout(() => {
+    // Check if it's not night time and not a holiday
+    if (!isNightTime() && !isTodayHoliday()) {
+      bot.telegram.sendMessage(
+        chatId,
+        '✅ Тестовое сообщение!\n\n' +
+        'Бот работает исправно. Вы будете получать напоминания о праздниках в Баден-Вюртемберге.\n\n' +
+        '💚 Все системы в норме!'
+      ).catch(err => {
+        console.error(`Failed to send test message to ${chatId}:`, err.message);
+        if (err.message.includes('blocked')) {
+          activeChatIds.delete(chatId);
+        }
+      });
+      console.log(`Test message sent to ${chatId}`);
+    } else {
+      console.log(`Test message skipped for ${chatId} (night time or holiday)`);
+    }
+  }, 6 * 60 * 60 * 1000); // 6 hours in milliseconds
 });
 
 // Health check endpoint for Render
