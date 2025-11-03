@@ -1,33 +1,77 @@
 import { Telegraf } from 'telegraf';
 import dotenv from 'dotenv';
-import Holidays from 'date-holidays';
 import cron from 'node-cron';
 import express from 'express';
 
 dotenv.config();
 
 const bot = new Telegraf(process.env.BOT_TOKEN as string);
-const hd = new Holidays('DE', 'BW'); // Germany, Baden-Württemberg
 const app = express();
 const PORT = process.env.PORT || 3000;
 const RENDER_URL = process.env.RENDER_URL; // Your Render service URL
+const REGION_CODE = 'DE-BW'; // Baden-Württemberg
 
 // Store active chat IDs
 const activeChatIds = new Set<number>();
 
+// Holiday interface from Nager.Date API
+interface Holiday {
+  date: string;
+  localName: string;
+  name: string;
+  countryCode: string;
+  fixed: boolean;
+  global: boolean;
+  counties: string[] | null;
+  launchYear: number | null;
+  types: string[];
+}
+
+// Cache for holidays
+let holidaysCache: Holiday[] = [];
+let lastFetchYear: number = 0;
+
+// Fetch holidays from Nager.Date API
+async function fetchHolidays(year: number): Promise<Holiday[]> {
+  try {
+    const response = await fetch(`https://date.nager.at/api/v3/publicholidays/${year}/DE`);
+    if (!response.ok) {
+      throw new Error(`API request failed: ${response.status}`);
+    }
+    const holidays = await response.json() as Holiday[];
+    return holidays;
+  } catch (error) {
+    console.error(`Failed to fetch holidays for ${year}:`, error);
+    return [];
+  }
+}
+
+// Get holidays for Baden-Württemberg
+async function getHolidaysForRegion(year: number): Promise<Holiday[]> {
+  const holidays = await fetchHolidays(year);
+
+  // Filter holidays that apply to Baden-Württemberg
+  return holidays.filter(holiday =>
+    holiday.global ||
+    (holiday.counties && holiday.counties.includes(REGION_CODE))
+  );
+}
+
 // Function to get upcoming holidays
-function getUpcomingHolidays(count: number = 2) {
+async function getUpcomingHolidays(count: number = 2): Promise<Holiday[]> {
   const now = new Date();
   const currentYear = now.getFullYear();
 
-  // Get holidays for current and next year
-  const holidays = [
-    ...hd.getHolidays(currentYear),
-    ...hd.getHolidays(currentYear + 1)
-  ];
+  // Fetch holidays if not cached or year changed
+  if (lastFetchYear !== currentYear || holidaysCache.length === 0) {
+    const currentYearHolidays = await getHolidaysForRegion(currentYear);
+    const nextYearHolidays = await getHolidaysForRegion(currentYear + 1);
+    holidaysCache = [...currentYearHolidays, ...nextYearHolidays];
+    lastFetchYear = currentYear;
+  }
 
   // Filter and sort holidays that are in the future
-  const upcomingHolidays = holidays
+  const upcomingHolidays = holidaysCache
     .filter(holiday => new Date(holiday.date) > now)
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
     .slice(0, count);
@@ -60,23 +104,25 @@ function isNightTime(): boolean {
 }
 
 // Check if today is a holiday
-function isTodayHoliday(): boolean {
+async function isTodayHoliday(): Promise<boolean> {
   const now = new Date();
   const currentYear = now.getFullYear();
-  const holidays = hd.getHolidays(currentYear);
-
   const today = now.toISOString().split('T')[0];
 
-  return holidays.some(holiday => {
-    const holidayDate = new Date(holiday.date).toISOString().split('T')[0];
-    return holidayDate === today;
-  });
+  // Use cached holidays or fetch
+  if (lastFetchYear !== currentYear || holidaysCache.length === 0) {
+    const currentYearHolidays = await getHolidaysForRegion(currentYear);
+    holidaysCache = [...currentYearHolidays];
+    lastFetchYear = currentYear;
+  }
+
+  return holidaysCache.some((holiday: Holiday) => holiday.date === today);
 }
 
-bot.start((ctx) => {
+bot.start(async (ctx) => {
   activeChatIds.add(ctx.chat.id);
 
-  const upcomingHolidays = getUpcomingHolidays(2);
+  const upcomingHolidays = await getUpcomingHolidays(2);
 
   let message = '🎉 Добро пожаловать в бот напоминаний о праздниках!\n\n';
   message += '📍 Регион: Баден-Вюртемберг, Германия\n\n';
@@ -84,7 +130,7 @@ bot.start((ctx) => {
   if (upcomingHolidays.length > 0) {
     message += '🗓 Ближайшие праздники:\n\n';
 
-    upcomingHolidays.forEach((holiday, index) => {
+    upcomingHolidays.forEach((holiday: Holiday, index: number) => {
       const holidayDate = new Date(holiday.date);
       const daysUntil = getDaysUntil(holidayDate);
       const dateStr = holidayDate.toLocaleDateString('ru-RU', {
@@ -96,7 +142,7 @@ bot.start((ctx) => {
         weekday: 'long'
       });
 
-      message += `${index + 1}. ${holiday.name}\n`;
+      message += `${index + 1}. ${holiday.localName}\n`;
       message += `   📅 ${dateStr} (${weekDay})\n`;
       message += `   ⏰ Через ${formatDays(daysUntil)}\n\n`;
     });
@@ -111,9 +157,9 @@ bot.start((ctx) => {
 
   // Schedule test message after 6 hours
   const chatId = ctx.chat.id;
-  setTimeout(() => {
+  setTimeout(async () => {
     // Check if it's not night time and not a holiday
-    if (!isNightTime() && !isTodayHoliday()) {
+    if (!isNightTime() && !(await isTodayHoliday())) {
       bot.telegram.sendMessage(
         chatId,
         '✅ Тестовое сообщение!\n\n' +
