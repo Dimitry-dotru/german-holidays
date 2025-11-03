@@ -92,9 +92,12 @@ bot.start((ctx) => {
         month: 'long',
         year: 'numeric'
       });
+      const weekDay = holidayDate.toLocaleDateString('ru-RU', {
+        weekday: 'long'
+      });
 
       message += `${index + 1}. ${holiday.name}\n`;
-      message += `   📅 ${dateStr}\n`;
+      message += `   📅 ${dateStr} (${weekDay})\n`;
       message += `   ⏰ Через ${formatDays(daysUntil)}\n\n`;
     });
   } else {
